@@ -1,0 +1,110 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: agnohire-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agnohire}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agnohire}
+      POSTGRES_DB: ${POSTGRES_DB:-agnohire}
+    # max_connections raised from the 100 default so it can host PgBouncer's
+    # backend pool (see pgbouncer.DEFAULT_POOL_SIZE below) plus headroom for
+    # DIRECT_URL migrations, adminer, and manual psql sessions. shared_buffers
+    # bumped alongside it — Postgres wants ~2-10MB of shared memory per active
+    # connection's worth of buffer headroom at this connection count.
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB"]
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agnohire}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Connection pooler in front of Postgres. Postgres itself cannot safely hold
+  # thousands of direct connections (each one costs real memory/CPU context-
+  # switch overhead) — mass-hiring drives need 10,000+ concurrent candidates
+  # (times multiple tenants) making short DB queries, which is a client-side
+  # connection count, not a real backend-connection count. PgBouncer accepts
+  # that many cheap client connections and multiplexes them over a small,
+  # fixed pool of real Postgres backend connections.
+  #
+  # pool_mode=transaction is required for this to scale, and is safe here
+  # specifically because RLS tenant context is set via set_config(..., true)
+  # (transaction-scoped, i.e. SET LOCAL) inside the SAME transaction as every
+  # query — see server/src/config/database.ts. Nothing session-scoped leaks
+  # across a pooled connection being handed to a different logical client
+  # between transactions.
+  #
+  # DIRECT_URL (migrations, using the Postgres owner role) intentionally
+  # bypasses this and connects straight to `postgres:5432` — DDL and the
+  # migration runner don't belong in a pooled transaction pool.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: agnohire-pgbouncer
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agnohire}:${POSTGRES_PASSWORD:-agnohire}@postgres:5432/${POSTGRES_DB:-agnohire}
+      POOL_MODE: transaction
+      # Frontend (client-side) connections PgBouncer will accept at once.
+      # Cheap (~2KB each) — sized well above 10,000 concurrent candidates x
+      # multiple simultaneous tenant drives, plus staff logins.
+      MAX_CLIENT_CONN: "20000"
+      # Real backend connections PgBouncer opens to Postgres. Kept under
+      # Postgres's max_connections=200 above, leaving room for DIRECT_URL
+      # migrations, adminer, and manual sessions.
+      DEFAULT_POOL_SIZE: "150"
+      MIN_POOL_SIZE: "10"
+      RESERVE_POOL_SIZE: "20"
+      RESERVE_POOL_TIMEOUT: "3"
+      # How long an over-capacity client query waits in PgBouncer's queue for
+      # a backend connection to free up, before erroring, rather than hanging
+      # indefinitely under a traffic spike.
+      QUERY_WAIT_TIMEOUT: "30"
+      # Backend connections idle (unused, sitting in the pool) longer than this
+      # get closed rather than held open — lowered from 60s so the pool actually
+      # shrinks back down at rest instead of settling near DEFAULT_POOL_SIZE.
+      SERVER_IDLE_TIMEOUT: "20"
+      # Force every backend connection to be recycled at least this often,
+      # even if it's never idle long enough to hit SERVER_IDLE_TIMEOUT (e.g.
+      # kept "hot" by constant low-level Bull worker polling) — bounds how
+      # long any single connection can stay open regardless of traffic shape.
+      SERVER_LIFETIME: "300"
+      # Prisma's `?schema=public` sends a `search_path` startup parameter,
+      # which PgBouncer rejects outright unless explicitly allowed through.
+      IGNORE_STARTUP_PARAMETERS: "extra_float_digits,search_path"
+      ADMIN_USERS: ${POSTGRES_USER:-agnohire}
+      # scram-sha-256 (not trust) — matches how Postgres roles are actually
+      # authenticated here. This image always proxies auth via auth_user/
+      # auth_query rather than embedding a literal password on the [databases]
+      # line: PgBouncer logs in to Postgres as the owner role (superuser, so
+      # it can read pg_shadow), looks up whichever role a client is actually
+      # connecting as (agnohire_app for app traffic, agnohire for anything
+      # using the owner), and performs a mediated SCRAM handshake for it —
+      # so real per-role credentials are enforced end-to-end, not skipped.
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: agnohire-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

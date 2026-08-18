@@ -1,0 +1,2201 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Runtime app connection: restricted, non-superuser, NOBYPASSRLS role so
+  // Row-Level Security is actually enforced (RLS Phase 1).
+  url       = env("DATABASE_URL")
+  // Migrations / introspection run as the owner so DDL (and CREATE ROLE) works.
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                        String              @id @default(uuid())
+  fullName                  String
+  // Unique among LIVE users only (still global across tenants — this is not
+  // per-tenant identity). Enforced by a PARTIAL unique index:
+  //   CREATE UNIQUE INDEX "User_email_active_key"
+  //     ON "User"(email) WHERE "deletedAt" IS NULL;
+  // defined in migration 20260714110000_user_email_live_unique. Prisma cannot
+  // express a partial constraint, so it is intentionally NOT @unique here — keep
+  // this comment in sync with the migration.
+  //
+  // Two consequences for anyone touching this column:
+  //  1. `email` is NOT in UserWhereUniqueInput. Use findFirst, never findUnique.
+  //  2. Soft-deleted rows may now duplicate an email (and coexist with a live
+  //     one), so any tombstone lookup must orderBy { deletedAt: 'desc' } and take
+  //     the newest, or it will resurrect an arbitrary one.
+  email                     String
+  passwordHash              String?
+  avatarUrl                 String?
+  phone                     String?
+  roleId                    String
+  sectorId                  String?
+  isActive                  Boolean             @default(true)
+  // Forces the password-change modal on next login — set true whenever an
+  // operator sets/resets this user's password on their behalf (they never
+  // chose it themselves), cleared the moment they successfully change it.
+  mustChangePassword        Boolean             @default(false)
+  lastLoginAt               DateTime?
+  loginAttempts             Int                 @default(0)
+  lockedUntil               DateTime?
+  resetToken                String?
+  resetTokenExp             DateTime?
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+  deletedAt                 DateTime?
+  address                   String?
+  bio                       String?
+  dateOfBirth               DateTime?
+  department                String?
+  gender                    String?
+  jobTitle                  String?
+  location                  String?
+  auditLogs                 AuditLog[]
+  feedbacks                 InterviewFeedback[]
+  approvedJobs              JobRequisition[]    @relation("JobApprover")
+  createdJobs               JobRequisition[]    @relation("JobCreator")
+  notifications             Notification[]      @relation("NotificationRecipient")
+  adminNotificationStates   AdminNotificationState[] @relation("AdminNotificationStates")
+  oauthAccounts             OAuthAccount[]
+  panelAssignments          PanelMember[]
+  refreshTokens             RefreshToken[]
+  role                      Role                @relation(fields: [roleId], references: [id])
+  sector                    Sector?             @relation(fields: [sectorId], references: [id])
+  sessions                  UserSession[]
+  tenantId                  String?
+  emailVerifiedAt           DateTime?
+  verifyToken               String?
+  tenant                    Tenant?             @relation(fields: [tenantId], references: [id])
+  maintenanceWindowsCreated MaintenanceWindow[] @relation("MaintenanceWindowCreator")
+  AiChatHistory             AiChatHistory[]
+  organizationMemberships   OrganizationMember[]
+  workspaceMemberships      WorkspaceMember[]
+  communicationMessages     CommunicationMessage[]
+  candidateTimelineEvents   CandidateTimelineEvent[]
+  // Denormalized from this row's Sector — this row's "home" org/workspace, NOT
+  // the authorization boundary. Which workspaces a user may actually ACT in is
+  // governed entirely by their OrganizationMember/WorkspaceMember rows above;
+  // an admin with sectorId (and so these) null still has real memberships.
+  organizationId            String?
+  workspaceId               String?
+
+  @@index([roleId])
+  @@index([sectorId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model Role {
+  id              String                 @id @default(uuid())
+  name            String                 @unique
+  displayName     String
+  permissions     RolePermission[]
+  users           User[]
+  // Per-tenant permission overrides. A tenant that customizes this role's
+  // permissions gets its own row here; the global `permissions` above are the
+  // default applied to tenants that never customized it.
+  tenantOverrides TenantRolePermission[]
+}
+
+// Per-tenant override of a role's permission set. Presence of a row means the
+// tenant has customized this role: its `permissionKeys` (which may be empty)
+// fully replace the global Role.permissions defaults FOR THAT TENANT ONLY, so
+// one tenant's role edits never leak into another's.
+model TenantRolePermission {
+  tenantId       String
+  roleId         String
+  permissionKeys String[]
+  updatedAt      DateTime @updatedAt
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  role           Role     @relation(fields: [roleId], references: [id])
+
+  @@id([tenantId, roleId])
+  @@index([tenantId])
+}
+
+// Platform-wide scheduled maintenance windows. No tenantId — applies to the
+// whole app, not one tenant. Created by SUPERADMIN only.
+model MaintenanceWindow {
+  id          String   @id @default(uuid())
+  title       String
+  message     String
+  startAt     DateTime
+  endAt       DateTime
+  status      String   @default("SCHEDULED") // SCHEDULED|NOTIFIED|ACTIVE|COMPLETED|CANCELLED
+  createdById String
+  createdBy   User     @relation("MaintenanceWindowCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([startAt])
+}
+
+model Permission {
+  id    String           @id @default(uuid())
+  key   String           @unique
+  label String
+  group String
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  role         Role       @relation(fields: [roleId], references: [id])
+
+  @@id([roleId, permissionId])
+}
+
+model OAuthAccount {
+  id                String   @id @default(uuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  accessToken       String?
+  refreshToken      String?
+  createdAt         DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id])
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model UserSession {
+  id         String    @id @default(uuid())
+  userId     String
+  ipAddress  String
+  userAgent  String
+  deviceInfo Json?
+  loginAt    DateTime  @default(now())
+  logoutAt   DateTime?
+  isActive   Boolean   @default(true)
+  user       User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid())
+  userId       String
+  token        String    @unique
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  /// Why this session is allowed to skip the tenant-approval gate: it was
+  /// minted by operator impersonation (platform.controller.tenantLogin).
+  /// refresh() re-runs the gate for normal sessions (false) so a tenant that
+  /// is later un-approved or suspended actually loses access, and keeps
+  /// exempting impersonated ones (true) so an operator can stay inside a
+  /// tenant they are reviewing. Rotation inherits the flag.
+  impersonated Boolean   @default(false)
+  user         User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model Sector {
+  id              String                @id @default(uuid())
+  // Unique per tenant, case-insensitively — matches resolveSectorId()'s own
+  // case-insensitive name lookup. Enforced by a partial unique index
+  // (tenantId, lower(name)) WHERE deletedAt IS NULL — defined in migration
+  // 20260813182523_sector_domain_questionbank_name_unique_per_tenant (Prisma
+  // schema cannot express a partial/expression index, so it is intentionally
+  // not declared here).
+  name            String
+  type            String
+  isActive        Boolean               @default(true)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  deletedAt       DateTime?
+  candidates      Candidate[]
+  domains         Domain[]
+  integrations    Integration[]
+  jobRequisitions JobRequisition[]
+  configurations  SystemConfiguration[]
+  users           User[]
+  tenantId        String
+  tenant          Tenant                @relation(fields: [tenantId], references: [id])
+  // Anchor of the Organization/Workspace retrofit (see Organization/Workspace
+  // models below): nullable during the staged rollout, backfilled to every
+  // tenant's default Organization/Workspace, then tightened to NOT NULL once
+  // backfill is verified complete. Every dependent below that already reaches
+  // this Sector via sectorId (Domain, JobRequisition, Candidate, Integration,
+  // SystemConfiguration, ...) gets its own denormalized organizationId/
+  // workspaceId backfilled FROM this column, mirroring how those same tables
+  // already denormalize tenantId alongside sectorId.
+  organizationId  String
+  workspaceId     String
+  organization    Organization          @relation(fields: [organizationId], references: [id])
+  workspace       Workspace             @relation(fields: [workspaceId], references: [id])
+
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+// A Tenant may run multiple Organizations (e.g. distinct business units sharing
+// one billing/tenant account). Every existing tenant gets exactly one, created
+// automatically by the backfill migration — see migration
+// 20260812110000_organization_workspace_core_tables and the one that follows
+// it. Not itself a security boundary on business data; Workspace (below) is.
+model Organization {
+  id         String             @id @default(uuid())
+  tenantId   String
+  name       String
+  slug       String?
+  isActive   Boolean            @default(true)
+  settings   Json?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  deletedAt  DateTime?
+  tenant     Tenant             @relation(fields: [tenantId], references: [id])
+  workspaces Workspace[]
+  members    OrganizationMember[]
+  sectors    Sector[]
+
+  // Slug is unique PER TENANT among LIVE rows only. Enforced by a PARTIAL
+  // unique index (tenantId, slug) WHERE deletedAt IS NULL — Prisma cannot
+  // express a partial constraint, so it is intentionally NOT declared as
+  // @@unique here (mirrors Candidate.email's identical convention; keep this
+  // comment in sync with migration
+  // 20260812160000_organization_workspace_slug_soft_delete_scoped).
+  @@index([tenantId])
+}
+
+// An Organization may run multiple Workspaces. This is the real, enforced data
+// isolation boundary below Tenant — see Sector.workspaceId above and the
+// workspace_isolation RLS policies added once the AsyncLocalStorage scope
+// context and its GUCs are live (server/src/config/tenantContext.ts,
+// server/src/config/database.ts).
+model Workspace {
+  id             String            @id @default(uuid())
+  // Denormalized ancestor id — same convention JobRequisition already uses for
+  // tenantId even though it's derivable via Sector.
+  tenantId       String
+  organizationId String
+  name           String
+  slug           String?
+  isActive       Boolean           @default(true)
+  settings       Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  deletedAt      DateTime?
+  tenant         Tenant            @relation(fields: [tenantId], references: [id])
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  members        WorkspaceMember[]
+  sectors        Sector[]
+
+  // Same partial-unique-index convention as Organization.slug above — see
+  // migration 20260812160000_organization_workspace_slug_soft_delete_scoped.
+  @@index([tenantId])
+  @@index([organizationId])
+}
+
+// Container-level role for Organization membership (ORG_ADMIN | ORG_MEMBER) —
+// distinct from the ATS functional Role (HR/RECRUITER/etc.) on User, which is
+// unaffected by this table. TENANT_OWNER/ADMIN/SUPERADMIN never need a row
+// here to administer every org in their tenant; see
+// workspaceMembershipService.canAccessWorkspace.
+model OrganizationMember {
+  id             String       @id @default(uuid())
+  organizationId String
+  // Denormalized, mirrors the tenant choke-point pattern used everywhere else.
+  tenantId       String
+  userId         String
+  role           String       @default("ORG_MEMBER")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([tenantId])
+}
+
+// Container-level role for Workspace membership (WORKSPACE_ADMIN |
+// WORKSPACE_MEMBER) — see OrganizationMember above for the same rationale.
+model WorkspaceMember {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  tenantId       String
+  userId         String
+  role           String    @default("WORKSPACE_MEMBER")
+  // Grantable capability, OFF by default: lets this specific member manage
+  // users scoped to this one workspace even if their ATS role otherwise
+  // lacks `user.manage`. Only settable by a caller who already holds
+  // `workspace.manage` (tenant/org admin) — see workspaceService.ts. Kept
+  // independent of `role` (WORKSPACE_ADMIN/WORKSPACE_MEMBER): the container
+  // role is a display/ownership label, this is an explicit, auditable grant.
+  canManageUsers Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  workspace      Workspace @relation(fields: [workspaceId], references: [id])
+  user           User      @relation(fields: [userId], references: [id])
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@index([tenantId])
+}
+
+model Domain {
+  id              String           @id @default(uuid())
+  // Unique per (tenant, sector), case-insensitively — matches
+  // resolveDomainId()'s own case-insensitive lookup. Enforced by a partial
+  // unique index (tenantId, sectorId, lower(name)) WHERE deletedAt IS NULL —
+  // defined in migration
+  // 20260813182523_sector_domain_questionbank_name_unique_per_tenant (Prisma
+  // schema cannot express a partial/expression index, so it is intentionally
+  // not declared here). Domains with no sector are not deduplicated against
+  // each other (NULL is never equal to NULL).
+  name            String
+  parentId        String?
+  sectorId        String?
+  isActive        Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  deletedAt       DateTime?
+  candidates      Candidate[]
+  parent          Domain?          @relation("DomainTree", fields: [parentId], references: [id])
+  children        Domain[]         @relation("DomainTree")
+  sector          Sector?          @relation(fields: [sectorId], references: [id])
+  jobRequisitions JobRequisition[]
+  questions       Question[]
+  questionBanks   QuestionBank[]
+  recruiterSkills RecruiterSkill[]
+  tenantId        String
+  // Denormalized from this row's Sector, nullable forever (sectorId itself is
+  // optional here) — see Sector.organizationId/workspaceId's doc comment.
+  organizationId  String?
+  workspaceId     String?
+
+  @@index([sectorId])
+  @@index([parentId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model RecruiterSkill {
+  id        String   @id @default(uuid())
+  userId    String
+  domainId  String
+  skillTags String[]
+  domain    Domain   @relation(fields: [domainId], references: [id])
+
+  @@index([userId])
+  @@index([domainId])
+}
+
+model JobRequisition {
+  id                String                   @id @default(uuid())
+  title             String
+  description       String
+  sectorId          String
+  domainId          String
+  createdById       String
+  approvedById      String?
+  templateId        String?
+  status            String                   @default("DRAFT")
+  workMode          String?
+  location          String?
+  experienceMin     Int?
+  experienceMax     Int?
+  budgetMin         Decimal?
+  budgetMax         Decimal?
+  headcount         Int                      @default(1)
+  filled            Int                      @default(0)
+  skills            String[]
+  deadline          DateTime?
+  approvedAt        DateTime?
+  closedAt          DateTime?
+  aiGeneratedJd     Boolean                  @default(false)
+  // Public careers page: per-job opt-in to show this job's budget range on the
+  // public listing/detail (default off — compensation is sensitive, and this
+  // is set per job rather than tenant-wide so admins choose case by case).
+  showSalaryPublicly Boolean                 @default(false)
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  deletedAt         DateTime?
+  approvalWorkflows ApprovalWorkflow[]
+  candidates        Candidate[]
+  interviews        Interview[]
+  workflowRounds    InterviewWorkflowRound[]
+  applications      JobApplication[]
+  approvedBy        User?                    @relation("JobApprover", fields: [approvedById], references: [id])
+  createdBy         User                     @relation("JobCreator", fields: [createdById], references: [id])
+  domain            Domain                   @relation(fields: [domainId], references: [id])
+  sector            Sector                   @relation(fields: [sectorId], references: [id])
+
+  tenantId String
+  // Denormalized from this row's Sector — tightened to NOT NULL alongside
+  // Sector.organizationId/workspaceId, since sectorId is required here.
+  organizationId String
+  workspaceId    String
+
+  @@index([sectorId])
+  @@index([domainId])
+  @@index([status])
+  @@index([createdById])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model JobTemplate {
+  id             String    @id @default(uuid())
+  name           String
+  domainId       String?
+  description    String?
+  skills         String[]
+  experienceMin  Int?
+  experienceMax  Int?
+  workMode       String?
+  createdAt      DateTime  @default(now())
+  deletedAt      DateTime?
+  sectorId       String?
+  workflowRounds Json?
+  headcount      Int?
+  location       String?
+  tenantId       String
+  organizationId String?
+  workspaceId    String?
+
+  @@index([sectorId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model ApprovalWorkflow {
+  id               String         @id @default(uuid())
+  jobRequisitionId String
+  approverId       String
+  status           String         @default("PENDING")
+  comments         String?
+  actionedAt       DateTime?
+  createdAt        DateTime       @default(now())
+  job              JobRequisition @relation(fields: [jobRequisitionId], references: [id])
+
+  @@index([jobRequisitionId])
+}
+
+model InterviewWorkflowRound {
+  id               String         @id @default(uuid())
+  jobRequisitionId String
+  roundNumber      Int
+  roundName        String
+  roundType        String
+  passPercentage   Float?
+  sequenceOrder    Int
+  isMandatory      Boolean        @default(true)
+  autoProgression  Boolean        @default(true)
+  job              JobRequisition @relation(fields: [jobRequisitionId], references: [id], onDelete: Cascade)
+
+  @@index([jobRequisitionId])
+}
+
+model Candidate {
+  id                String                @id @default(uuid())
+  userId            String?               @unique
+  sectorId          String?
+  domainId          String?
+  fullName          String
+  // Email is unique PER TENANT, not globally: two customers may legitimately
+  // hold the same candidate. Enforced by a partial unique index
+  // (tenantId, email) WHERE deletedAt IS NULL — defined in migration
+  // 20260708120000_candidate_email_tenant_scoped (Prisma schema cannot express
+  // a partial unique constraint, so it is intentionally not declared here).
+  email             String
+  phone             String?
+  experienceLevel   String?
+  skills            String[]
+  linkedinUrl       String?
+  githubUrl         String?
+  location          String?
+  currentRole       String?
+  avatarUrl         String?
+  source            String?
+  fitScore          Float?
+  consentGiven      Boolean               @default(false)
+  consentAt         DateTime?
+  gdprDeletedAt     DateTime?
+  offerAccepted     Boolean               @default(false)
+  offerAcceptedDate DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  deletedAt         DateTime?
+  jobRequisitionId  String?
+  domain            Domain?               @relation(fields: [domainId], references: [id])
+  jobRequisition    JobRequisition?       @relation(fields: [jobRequisitionId], references: [id])
+  sector            Sector?               @relation(fields: [sectorId], references: [id])
+  assignments       CandidateAssignment[]
+  listItems         CandidateListItem[]
+  interviews        Interview[]
+  applications      JobApplication[]
+  resumes           Resume[]
+
+  tenantId String?
+  organizationId String?
+  workspaceId    String?
+  timelineEvents CandidateTimelineEvent[]
+
+  @@index([sectorId])
+  @@index([domainId])
+  @@index([jobRequisitionId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model JobApplication {
+  id               String         @id @default(uuid())
+  candidateId      String
+  jobRequisitionId String
+  status           String         @default("APPLIED")
+  stage            String?
+  fitScore         Float?
+  fitScoreData     Json?
+  appliedAt        DateTime       @default(now())
+  notes            String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  deletedAt        DateTime?
+  completedRounds  Json?
+  currentRound     Int            @default(1)
+  failedRound      Int?
+  workflowStatus   String         @default("IN_PROGRESS")
+  rejectionReason  String?
+  rejectedRound    String?
+  candidate        Candidate      @relation(fields: [candidateId], references: [id])
+  job              JobRequisition @relation(fields: [jobRequisitionId], references: [id])
+  offers           Offer[]
+  pipelineNotes    PipelineNote[]
+
+  tenantId String?
+
+  @@index([candidateId])
+  @@index([jobRequisitionId])
+  @@index([status])
+  @@index([tenantId])
+}
+
+model CandidateList {
+  id           String                @id @default(uuid())
+  name         String
+  uploadedById String
+  sectorId     String?
+  assignedTo   String?
+  totalCount   Int                   @default(0)
+  validCount   Int                   @default(0)
+  errorCount   Int                   @default(0)
+  // Rows that resolved to an ALREADY-EXISTING candidate (matched by email,
+  // phone, resume, LinkedIn or GitHub) rather than creating a new one — e.g.
+  // the same person appears in two different source files. These count
+  // toward validCount (they were added to this list successfully) but are
+  // surfaced separately so re-uploading overlapping data doesn't look like
+  // stale/wrong results.
+  linkedCount  Int                   @default(0)
+  status       String                @default("PROCESSING")
+  // BULK_IMPORT (created by the candidate-import drawer, from a CSV/Excel
+  // file) vs CURATED (built up manually from Sourcing/Talent Search as a
+  // reusable data directory). Deleting a list behaves differently per kind —
+  // see deleteCandidateList — so this must be set explicitly at creation, not
+  // inferred later. Defaults to CURATED (the non-destructive delete path) so
+  // any row that predates this column is never accidentally treated as
+  // disposable.
+  source       String                @default("CURATED")
+  errorReport  Json?
+  linkedReport Json?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  deletedAt    DateTime?
+  assignments  CandidateAssignment[]
+  items        CandidateListItem[]
+  tenantId     String
+  organizationId String?
+  workspaceId    String?
+
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model CandidateListItem {
+  id              String        @id @default(uuid())
+  candidateListId String
+  candidateId     String
+  candidate       Candidate     @relation(fields: [candidateId], references: [id])
+  list            CandidateList @relation(fields: [candidateListId], references: [id])
+
+  @@unique([candidateListId, candidateId])
+}
+
+model CandidateAssignment {
+  id           String         @id @default(uuid())
+  candidateId  String
+  recruiterId  String
+  listId       String?
+  assignedById String
+  status       String         @default("ASSIGNED")
+  assignedAt   DateTime       @default(now())
+  candidate    Candidate      @relation(fields: [candidateId], references: [id])
+  list         CandidateList? @relation(fields: [listId], references: [id])
+  tenantId     String?
+
+  @@index([candidateId])
+  @@index([recruiterId])
+  @@index([tenantId])
+}
+
+model Resume {
+  id          String    @id @default(uuid())
+  candidateId String
+  fileUrl     String
+  fileName    String
+  fileSize    Int
+  mimeType    String
+  isPrimary   Boolean   @default(true)
+  parsedData  Json?
+  parsedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+  fileData    Bytes?
+  parseError  String?
+  parseStatus String    @default("PENDING")
+  candidate   Candidate @relation(fields: [candidateId], references: [id])
+  tenantId    String?
+
+  @@index([candidateId])
+  @@index([tenantId])
+}
+
+model Interview {
+  id               String              @id @default(uuid())
+  candidateId      String
+  recruiterId      String
+  questionBankId   String?
+  scheduleId       String?             @unique
+  status           String              @default("SCHEDULED")
+  type             String              @default("AI")
+  accessToken      String?             @unique
+  startedAt        DateTime?
+  completedAt      DateTime?
+  duration         Int?
+  violations       Json?
+  recordingUrl     String?
+  transcriptUrl    String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  deletedAt        DateTime?
+  transcript       String?
+  terminatedReason String?
+  jobRequisitionId String?
+  roundNumber      Int?
+  answers          CandidateAnswer[]
+  candidate        Candidate           @relation(fields: [candidateId], references: [id])
+  jobRequisition   JobRequisition?     @relation(fields: [jobRequisitionId], references: [id])
+  schedule         InterviewSchedule?  @relation(fields: [scheduleId], references: [id])
+  feedbacks        InterviewFeedback[]
+  questions        InterviewQuestion[]
+  result           InterviewResult?
+  panelMembers     PanelMember[]
+  proctorShots     ProctorShot[]
+  biometricReport  BiometricReport?
+
+  tenantId String?
+  communicationMeeting CommunicationMeeting?
+
+  @@index([candidateId])
+  @@index([recruiterId])
+  @@index([status])
+  @@index([jobRequisitionId])
+  @@index([tenantId])
+}
+
+/// Webcam proctoring snapshots captured during a live interview. Bytes live in
+/// Postgres (same pattern as Resume.fileData) so evidence travels with the DB.
+model ProctorShot {
+  id          String    @id @default(uuid())
+  interviewId String
+  reason      String    @default("PERIODIC")
+  note        String?
+  mimeType    String    @default("image/jpeg")
+  imageData   Bytes
+  capturedAt  DateTime  @default(now())
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId])
+}
+
+model InterviewSchedule {
+  id              String     @id @default(uuid())
+  candidateId     String
+  recruiterId     String
+  scheduledDate   DateTime
+  duration        Int
+  timezone        String     @default("UTC")
+  instructions    String?
+  meetingLink     String?
+  calendarEventId String?
+  reminderSent    Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  inviteStatus    String     @default("PENDING")
+  meetingProvider String     @default("GOOGLE_MEET")
+  roundNumber     Int?
+  interview       Interview?
+  tenantId        String?
+
+  @@index([tenantId])
+}
+
+model PanelMember {
+  id          String    @id @default(uuid())
+  interviewId String
+  userId      String
+  status      String    @default("INVITED")
+  interview   Interview @relation(fields: [interviewId], references: [id])
+  user        User      @relation(fields: [userId], references: [id])
+
+  @@unique([interviewId, userId])
+}
+
+model InterviewResult {
+  id                   String    @id @default(uuid())
+  interviewId          String    @unique
+  totalScore           Float?
+  maxScore             Float?
+  percentageScore      Float?
+  aiScore              Float?
+  finalScore           Float?
+  decision             String?
+  aiDecision           String?
+  aiReasoning          String?
+  sentimentResult      Json?
+  skillMatchScore      Float?
+  resumeMatchScore     Float?
+  aiSummary            String?
+  communicationScore   Float?
+  keywordAnalysis      Json?
+  recruiterNotes       String?
+  decidedAt            DateTime?
+  decidedById          String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  recommendation       String?
+  reviewedAt           DateTime?
+  reviewedById         String?
+  reviewerNotes        String?
+  transcriptSummary    String?
+  confidenceScore      Float?
+  domainKnowledgeScore Float?
+  culturalFitScore     Float?
+  strengths            String?   @db.Text
+  improvements         String?   @db.Text
+  generatedAt          DateTime?
+  resultEmailedAt      DateTime? // set once when the candidate result email is sent (dedupe)
+  problemSolvingScore  Float?
+  technicalScore       Float?
+  hrApprovedAt         DateTime?
+  hrApprovedById       String?
+  hrRemarks            String?
+  hrStatus             String    @default("PENDING")
+  failureReason        String?   @db.Text
+  recommendedLearning  String?   @db.Text
+  feedbackPdfPath      String?
+  interviewerComments  String?
+  recommendedPosition  String?
+  recommendedSalary    Decimal?
+  interview            Interview @relation(fields: [interviewId], references: [id])
+}
+
+model InterviewFeedback {
+  id                  String    @id @default(uuid())
+  interviewId         String
+  reviewerId          String
+  technicalScore      Float?
+  communicationScore  Float?
+  problemSolvingScore Float?
+  culturalFitScore    Float?
+  overallRating       Float?
+  recommendation      String?
+  strengths           String?
+  improvements        String?
+  notes               String?
+  createdAt           DateTime  @default(now())
+  interview           Interview @relation(fields: [interviewId], references: [id])
+  reviewer            User      @relation(fields: [reviewerId], references: [id])
+
+  @@index([interviewId])
+}
+
+model QuestionBank {
+  id          String                   @id @default(uuid())
+  // Name is unique PER TENANT, not globally. Enforced by a partial unique
+  // index (tenantId, name) WHERE deletedAt IS NULL — defined in migration
+  // 20260813182523_sector_domain_questionbank_name_unique_per_tenant (Prisma
+  // schema cannot express a partial unique constraint, so it is
+  // intentionally not declared here).
+  name        String
+  domainId    String
+  description String?
+  createdById String
+  isPublic    Boolean                  @default(false)
+  sectorId    String?
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  deletedAt   DateTime?
+  attachmentId String?
+  questions   Question[]
+  domain      Domain                   @relation(fields: [domainId], references: [id])
+  assignments QuestionBankAssignment[]
+  attachment  Attachment?              @relation(fields: [attachmentId], references: [id])
+  tenantId    String
+  organizationId String?
+  workspaceId    String?
+
+  @@index([domainId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model QuestionBankAssignment {
+  id           String       @id @default(uuid())
+  bankId       String
+  recruiterId  String
+  assignedById String
+  assignedAt   DateTime     @default(now())
+  bank         QuestionBank @relation(fields: [bankId], references: [id])
+
+  @@index([bankId])
+  @@index([recruiterId])
+}
+
+model Question {
+  id          String              @id @default(uuid())
+  bankId      String
+  domainId    String?
+  text        String
+  type        String
+  difficulty  String
+  options     Json?
+  rubric      String?
+  /// CODE questions only: [{ input, expectedOutput, hidden }]. Null/empty = no
+  /// execution-based grading, falls back to AI-only scoring.
+  testCases   Json?
+  tags        String[]
+  aiGenerated Boolean             @default(false)
+  orderIndex  Int                 @default(0)
+  createdAt   DateTime            @default(now())
+  deletedAt   DateTime?
+  answers     CandidateAnswer[]
+  interviewQs InterviewQuestion[]
+  bank        QuestionBank        @relation(fields: [bankId], references: [id])
+  domain      Domain?             @relation(fields: [domainId], references: [id])
+  tenantId    String
+
+  @@index([bankId])
+  @@index([tenantId])
+}
+
+model InterviewQuestion {
+  id          String    @id @default(uuid())
+  interviewId String
+  questionId  String
+  orderIndex  Int
+  interview   Interview @relation(fields: [interviewId], references: [id])
+  question    Question  @relation(fields: [questionId], references: [id])
+
+  @@index([interviewId])
+}
+
+model CandidateAnswer {
+  id             String    @id @default(uuid())
+  interviewId    String
+  questionId     String
+  answerText     String?
+  answerCode     String?
+  selectedOption String?
+  language       String?
+  isCorrect      Boolean?
+  aiScore        Float?
+  maxScore       Float?
+  aiEvaluation   String?
+  timeTaken      Int?
+  createdAt      DateTime  @default(now())
+  aiImprovements String?
+  aiReasoning    String?
+  aiStrengths    String?
+  interview      Interview @relation(fields: [interviewId], references: [id])
+  question       Question  @relation(fields: [questionId], references: [id])
+
+  @@unique([interviewId, questionId])
+  @@index([interviewId])
+}
+
+model Assessment {
+  id               String                 @id @default(uuid())
+  title            String
+  description      String?
+  domainId         String?
+  sectorId         String?
+  jobRequisitionId String?
+  passingScore     Int                    @default(60)
+  durationMin      Int?
+  isActive         Boolean                @default(true)
+  createdById      String
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  deletedAt        DateTime?
+  assignments      AssessmentAssignment[]
+  questions        AssessmentQuestion[]
+
+  tenantId String
+  organizationId String?
+  workspaceId    String?
+
+  @@index([domainId])
+  @@index([sectorId])
+  @@index([jobRequisitionId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model AssessmentQuestion {
+  id           String     @id @default(uuid())
+  assessmentId String
+  questionId   String
+  orderIndex   Int        @default(0)
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, questionId])
+  @@index([assessmentId])
+}
+
+model AssessmentAssignment {
+  id               String                  @id @default(uuid())
+  assessmentId     String
+  candidateId      String
+  assignedById     String
+  accessToken      String                  @unique
+  status           String                  @default("PENDING")
+  startedAt        DateTime?
+  submittedAt      DateTime?
+  totalScore       Float?
+  maxScore         Float?
+  percentageScore  Float?
+  passed           Boolean?
+  aiSummary        String?
+  violations       Json? // proctoring integrity-violation log (mirrors Interview.violations)
+  terminatedReason String? // set when auto-ended for repeated integrity violations
+  recordingUrl     String? // candidate mic recording (Attachment download url)
+  transcript       String?                 @db.Text // post-hoc transcription of the recording
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  answers          AssessmentAnswer[]
+  proctorShots     AssessmentProctorShot[]
+  assessment       Assessment              @relation(fields: [assessmentId], references: [id])
+
+  tenantId String?
+
+  @@index([assessmentId])
+  @@index([candidateId])
+  @@index([status])
+  @@index([tenantId])
+}
+
+/// Webcam proctoring snapshots captured during a proctored assessment. Mirrors
+/// ProctorShot (interviews) — bytes live in Postgres so evidence travels with the DB.
+model AssessmentProctorShot {
+  id           String               @id @default(uuid())
+  assignmentId String
+  reason       String               @default("PERIODIC") // PERIODIC | VIOLATION | START | TERMINATION
+  note         String?
+  mimeType     String               @default("image/jpeg")
+  imageData    Bytes
+  capturedAt   DateTime             @default(now())
+  assignment   AssessmentAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@index([assignmentId])
+}
+
+model AssessmentAnswer {
+  id             String               @id @default(uuid())
+  assignmentId   String
+  questionId     String
+  answerText     String?
+  answerCode     String?
+  selectedOption String?
+  language       String?
+  isCorrect      Boolean?
+  aiScore        Float?
+  maxScore       Float?
+  aiEvaluation   String?
+  createdAt      DateTime             @default(now())
+  assignment     AssessmentAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assignmentId, questionId])
+  @@index([assignmentId])
+}
+
+model PipelineNote {
+  id            String         @id @default(uuid())
+  applicationId String
+  authorId      String
+  content       String
+  isPrivate     Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  application   JobApplication @relation(fields: [applicationId], references: [id])
+  tenantId      String?
+
+  @@index([applicationId])
+  @@index([tenantId])
+}
+
+model SourcingChannel {
+  id         String   @id @default(uuid())
+  name       String
+  type       String
+  configJson String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  tenantId   String?
+
+  @@index([tenantId])
+}
+
+model Referral {
+  id          String   @id @default(uuid())
+  referrerId  String
+  candidateId String
+  jobId       String?
+  status      String   @default("PENDING")
+  bonusAmount Decimal?
+  bonusPaid   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  tenantId    String?
+
+  @@index([tenantId])
+}
+
+model Offer {
+  id              String          @id @default(uuid())
+  applicationId   String
+  candidateId     String
+  jobId           String
+  offeredById     String
+  status          String          @default("DRAFT")
+  salaryOffered   Decimal?
+  joiningDate     DateTime?
+  validUntil      DateTime?
+  offerLetterUrl  String?
+  eSignatureData  Json?
+  signedAt        DateTime?
+  signerIp        String?
+  notes           String?
+  acceptanceToken String?         @unique
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  deletedAt       DateTime?
+  application     JobApplication  @relation(fields: [applicationId], references: [id])
+  documents       OfferDocument[]
+  onboarding      Onboarding?
+  tenantId        String?
+
+  @@index([applicationId])
+  @@index([candidateId])
+  @@index([tenantId])
+}
+
+model OfferDocument {
+  id              String    @id @default(uuid())
+  offerId         String
+  name            String
+  fileUrl         String?
+  type            String
+  required        Boolean   @default(false)
+  uploadedAt      DateTime?
+  description     String?
+  maxSizeInt      Int?
+  status          String    @default("PENDING")
+  verifiedById    String?
+  verifiedAt      DateTime?
+  rejectionReason String?
+  reToken         String?   @unique
+  createdAt       DateTime  @default(now())
+  order           Int       @default(0)
+  offer           Offer     @relation(fields: [offerId], references: [id])
+
+  @@index([offerId])
+}
+
+model Onboarding {
+  id             String    @id @default(uuid())
+  offerId        String    @unique
+  candidateId    String
+  status         String    @default("NOT_STARTED")
+  bgvStatus      String    @default("PENDING")
+  bgvProvider    String?
+  bgvReportUrl   String?
+  checklistItems Json?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  offer          Offer     @relation(fields: [offerId], references: [id])
+}
+
+model Notification {
+  id          String    @id @default(uuid())
+  recipientId String
+  actorId     String?
+  type        String
+  title       String
+  message     String
+  entityType  String?
+  entityId    String?
+  isRead      Boolean   @default(false)
+  isCleared   Boolean   @default(false)
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  recipient   User      @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  adminStates AdminNotificationState[] @relation("NotificationAdminStates")
+
+  tenantId String?
+  // Best-effort only (G3): stamped from the recipient's own organizationId/
+  // workspaceId at create time where notificationService has it on hand, but
+  // never auto-filtered on — see server/src/config/database.ts's SCOPE_MODELS.
+  organizationId String?
+  workspaceId    String?
+
+  @@index([recipientId])
+  @@index([isRead])
+  @@index([tenantId])
+}
+
+model EmailTemplate {
+  id        String    @id @default(uuid())
+  name      String
+  type      String
+  subject   String
+  body      String
+  sectorId  String?
+  isDefault Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  tenantId  String?
+  organizationId String?
+  workspaceId    String?
+
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model EmailLog {
+  id         String    @id @default(uuid())
+  toEmail    String
+  subject    String
+  templateId String?
+  status     String
+  errorMsg   String?
+  sentAt     DateTime?
+  entityType String? // e.g. 'Interview', 'Offer' — what this email was about
+  entityId   String? // id of that entity, for per-entity send-once dedupe
+  createdAt  DateTime  @default(now())
+
+  tenantId String?
+
+  @@index([entityType, entityId, templateId, status])
+  @@index([toEmail, templateId, status])
+  @@index([tenantId])
+}
+
+model Integration {
+  id         String    @id @default(uuid())
+  name       String
+  type       String
+  isEnabled  Boolean   @default(false)
+  configJson String?
+  sectorId   String?
+  webhookUrl String?
+  lastSyncAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  sector     Sector?   @relation(fields: [sectorId], references: [id])
+  tenantId   String?
+  organizationId String?
+  workspaceId    String?
+
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model WebhookLog {
+  id            String    @id @default(uuid())
+  event         String
+  payload       Json
+  targetUrl     String
+  status        String
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime?
+  createdAt     DateTime  @default(now())
+  tenantId      String?
+  // Best-effort only (G3) — see Notification's doc comment above.
+  organizationId String?
+  workspaceId    String?
+
+  @@index([tenantId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  role        String?
+  action      String
+  entity      String?
+  entityId    String?
+  description String
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  userAgent   String?
+  deviceInfo  Json?
+  sectorId    String?
+  createdAt   DateTime @default(now())
+  user        User?    @relation(fields: [userId], references: [id])
+
+  tenantId String?
+  organizationId String?
+  workspaceId    String?
+
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([sectorId, createdAt])
+  @@index([createdAt])
+  @@index([tenantId, createdAt])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model GdprRequest {
+  id            String    @id @default(uuid())
+  candidateId   String
+  type          String
+  status        String    @default("PENDING")
+  requestedAt   DateTime  @default(now())
+  processedAt   DateTime?
+  processedById String?
+  tenantId      String?
+  // Best-effort only (G3) — see Notification's doc comment above.
+  organizationId String?
+  workspaceId    String?
+
+  @@index([tenantId])
+}
+
+model DataRetentionPolicy {
+  id                String   @id @default(uuid())
+  entityType        String   @unique
+  retentionDays     Int
+  autoDeleteEnabled Boolean  @default(false)
+  updatedAt         DateTime @updatedAt
+}
+
+model SystemConfiguration {
+  id          String   @id @default(uuid())
+  key         String
+  value       String
+  category    String
+  label       String
+  description String?
+  dataType    String
+  isSecret    Boolean  @default(false)
+  sectorId    String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  sector      Sector?  @relation(fields: [sectorId], references: [id])
+  tenantId    String?
+  // Adds a workspace tier to the resolution precedence chain (see
+  // configService.resolveRow): workspace+sector -> tenant+sector ->
+  // tenant-global -> platform+sector -> platform-global.
+  organizationId String?
+  workspaceId    String?
+
+  @@unique([key, tenantId, workspaceId, sectorId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model Theme {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  tokens    Json
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model AnalyticsSnapshot {
+  id         String   @id @default(uuid())
+  sectorId   String?
+  snapshotAt DateTime @default(now())
+  period     String
+  data       Json
+  tenantId   String?
+  organizationId String?
+  workspaceId    String?
+
+  @@index([tenantId])
+  @@index([organizationId])
+  @@index([workspaceId])
+}
+
+model Attachment {
+  id           String   @id @default(uuid())
+  fileName     String
+  mimeType     String
+  fileSize     Int
+  fileData     Bytes
+  uploadedById String?
+  createdAt    DateTime @default(now())
+  tenantId     String?
+  questionBanks QuestionBank[]
+
+  @@index([uploadedById])
+  @@index([tenantId])
+}
+
+model BiometricReport {
+  id                  String    @id @default(uuid())
+  interviewId         String    @unique
+  candidateId         String
+  enrollmentImage     String    @db.Text
+  enrollmentTimestamp DateTime  @default(now())
+  faceSignature       Json?
+  verificationStatus  String    @default("VERIFIED")
+  totalChecks         Int       @default(0)
+  successfulMatches   Int       @default(0)
+  failedMatches       Int       @default(0)
+  warningsIssued      Int       @default(0)
+  noFaceEvents        Int       @default(0)
+  multipleFaceEvents  Int       @default(0)
+  matchHistory        Json?
+  latestImage         String?   @db.Text
+  interview           Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-tenant SaaS: tenancy, plans, subscriptions, usage metering, billing.
+// Additive — introduced for the cloud SaaS migration. Tenant is the top-level
+// isolation boundary; existing Sector becomes a unit WITHIN a tenant.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id                 String                 @id @default(uuid())
+  name               String
+  slug               String                 @unique
+  status             String                 @default("PENDING") // PENDING|ACTIVE|SUSPENDED|CANCELLED
+  ownerUserId        String?
+  // Platform operator who provisioned this tenant (null = self-registered).
+  // Drives the Tenant Accounts split and gates edit/impersonation to the
+  // operator who created it.
+  createdById        String?
+  planId             String?
+  settings           Json?
+  razorpayCustomerId String?
+  // Owner contact number collected at signup — the number marketing calls to
+  // qualify a self-serve tenant before approving it.
+  phone              String?
+  // Sales/marketing approval, orthogonal to billing `status`. Self-serve signups
+  // start PENDING (inert, cannot log in); admin-provisioned + legacy tenants are
+  // APPROVED. A tenant is only usable once APPROVED.
+  approvalStatus     String                 @default("APPROVED") // PENDING|APPROVED|REJECTED
+  approvedAt         DateTime?
+  approvedById       String?
+  approvalNotes      String?
+  // IANA timezone (e.g. "Asia/Kolkata"), auto-detected from the owner's
+  // browser at signup and editable later. Consumed by server-rendered
+  // artifacts (PDF reports, transactional emails) that have no browser to
+  // implicitly localize into — everything else already renders in the
+  // viewer's own local time via the browser.
+  timezone           String                 @default("UTC")
+  // Platform-superadmin-only feature grant for the public careers page
+  // (website embed). Defaults OFF for every tenant — hidden from the tenant's
+  // own admin UI until a superadmin grants it here. NOT editable by tenant
+  // staff; contrast with CONFIG_KEYS.CAREERS_ENABLED, which is the tenant's
+  // own on/off switch for an already-granted page.
+  careersPageEnabled Boolean                @default(false)
+  // Per-tenant add-on capacity purchased on top of the plan's included
+  // maxX — independent of the shared Plan row, so buying add-ons for this
+  // tenant never affects any other tenant on the same plan. Only meaningful
+  // when the plan has a matching pricePerX configured (see
+  // billingService.purchaseAddonCapacity); always 0 otherwise.
+  extraOrganizations Int                    @default(0)
+  extraWorkspaces    Int                    @default(0)
+  extraUsers         Int                    @default(0)
+  extraCandidates    Int                    @default(0)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  deletedAt          DateTime?
+  plan               Plan?                  @relation(fields: [planId], references: [id])
+  subscription       Subscription?
+  users              User[]
+  sectors            Sector[]
+  organizations      Organization[]
+  workspaces         Workspace[]
+  usageCounters      UsageCounter[]
+  invites            TenantInvite[]
+  invoices           Invoice[]
+  roleOverrides      TenantRolePermission[]
+  AiChatHistory      AiChatHistory[]
+  addonPurchases     TenantAddonPurchase[]
+  pendingAddonChanges TenantAddonPendingChange[]
+  recurringAddonCharges RecurringAddonCharge[]
+
+  @@index([status])
+  @@index([approvalStatus])
+}
+
+model Plan {
+  id                       String         @id @default(uuid())
+  code                     String         @unique // FREE|STARTER|PRO|ENTERPRISE|LEGACY_ENTERPRISE
+  name                     String
+  priceMonthly             Decimal?
+  priceYearly              Decimal?
+  currency                 String         @default("INR")
+  isActive                 Boolean        @default(true)
+  razorpayPlanIdMonthly    String?
+  razorpayPlanIdYearly     String?
+  // Limits: NULL = unlimited
+  maxUsers                 Int?
+  maxInterviewedCandidates Int?
+  maxActiveJobs            Int?
+  maxCandidates            Int?
+  maxSchedules             Int?
+  maxOrganizations         Int?
+  maxWorkspaces            Int?
+  storageMb                Int?
+  // Per-unit price for self-service add-on capacity, in `currency`: NULL =
+  // this metric has no add-on option, so maxX above is an unconditional hard
+  // block. When set, a tenant can proactively buy add-on capacity at this
+  // rate to raise their included quota — creation is ALWAYS blocked at the
+  // effective (plan + add-on) limit either way; there is no automatic
+  // metered-overage bypass — see entitlementService's assertWithinLimit.
+  pricePerOrganization     Decimal?
+  pricePerWorkspace        Decimal?
+  pricePerUser             Decimal?
+  pricePerCandidate        Decimal?
+  // Deletion floor, independent of maxX above: NULL = no floor beyond the
+  // existing structural one (a tenant's single "default" organization/
+  // workspace can never be deleted). When set, a delete that would take the
+  // tenant's LIVE count below this number is blocked — see
+  // entitlementService's assertAboveMinimum.
+  minOrganizations         Int?
+  minWorkspaces            Int?
+  minUsers                 Int?
+  minCandidates            Int?
+  // Free-trial length (days) granted on tenant approval — NULL falls back to
+  // the platform-wide "billing.default_trial_days" SystemConfiguration
+  // default. See tenantAdminService.approveTenant.
+  trialDays                Int?
+  aiEnabled                Boolean        @default(true)
+  proctoringEnabled        Boolean        @default(true)
+  featuresJson             Json?
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+  tenants                  Tenant[]
+  subscriptions            Subscription[]
+}
+
+model Subscription {
+  id                     String    @id @default(uuid())
+  tenantId               String    @unique
+  planId                 String
+  status                 String    @default("CREATED") // CREATED|PENDING|TRIALING|ACTIVE|PAST_DUE|HALTED|CANCELLED|EXPIRED
+  billingInterval        String    @default("monthly") // monthly|yearly
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  cancelAtPeriodEnd      Boolean   @default(false)
+  provider               String    @default("razorpay")
+  razorpaySubscriptionId String?   @unique
+  razorpayCustomerId     String?
+  shortUrl               String?
+  // Explicit opt-in for auto-collecting the recurring add-on/overage amount
+  // via Razorpay each cycle (see billingService.attachRecurringAddonCharge).
+  // Defaults OFF — a tenant admin must actively enable it; autoPayConsentedAt
+  // is a permanent audit record of when they last did so (never cleared on
+  // disable, so "when did they consent" stays answerable).
+  autoPayEnabled         Boolean   @default(false)
+  autoPayConsentedAt     DateTime?
+  // Dedup timestamps for the two one-time TRIAL-expiry emails (see
+  // jobs/subscriptionSweeper.ts + billing/billingEmailService.ts) — each
+  // fires at most once per period, independent of the recurring add-on
+  // renewal reminder (billingService.scheduleRenewalReminder), which is
+  // about the amount to be charged, not the subscription itself lapsing.
+  expiryReminderSentAt      DateTime?
+  expiredNotificationSentAt DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  tenant                 Tenant    @relation(fields: [tenantId], references: [id])
+  plan                   Plan      @relation(fields: [planId], references: [id])
+
+  @@index([status])
+}
+
+// A tenant-requested reduction in purchased add-on capacity (see
+// Tenant.extraX), deferred to take effect at the NEXT renewal — never
+// applied immediately, since the tenant already paid for the current
+// cycle's higher capacity (no proration, no early takeback; see
+// entitlementService.applyPendingAddonChanges, called from rolloverPeriod).
+model TenantAddonPendingChange {
+  id        String    @id @default(uuid())
+  tenantId  String
+  metric    String // ORGANIZATIONS | WORKSPACES | USERS | CANDIDATES
+  delta     Int // negative — a decrease request
+  status    String    @default("PENDING") // PENDING | APPLIED | CANCELLED
+  createdAt DateTime  @default(now())
+  appliedAt DateTime?
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}
+
+// One cycle's recurring add-on/overage amount actually attached to the
+// tenant's Razorpay subscription as an addon (see
+// billingService.attachRecurringAddonCharge) — only ever created when the
+// tenant has autoPayEnabled. The unique constraint is the idempotency guard
+// against attaching the same cycle's charge twice (retry, duplicate dispatch).
+model RecurringAddonCharge {
+  id              String    @id @default(uuid())
+  tenantId        String
+  periodEnd       DateTime
+  amount          Decimal
+  currency        String    @default("INR")
+  razorpayAddonId String?
+  status          String    @default("ATTACHED") // ATTACHED | FAILED
+  errorMessage    String?
+  createdAt       DateTime  @default(now())
+  tenant          Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, periodEnd])
+  @@index([tenantId])
+}
+
+model UsageCounter {
+  id          String   @id @default(uuid())
+  tenantId    String
+  metric      String // USERS|INTERVIEWED_CANDIDATES|ACTIVE_JOBS|ASSESSMENTS
+  periodStart DateTime
+  value       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, metric, periodStart])
+  @@index([tenantId])
+}
+
+model PaymentEvent {
+  id             String    @id @default(uuid())
+  tenantId       String?
+  provider       String    @default("razorpay")
+  eventId        String    @unique
+  eventType      String
+  payloadJson    Json?
+  signatureValid Boolean   @default(false)
+  processedAt    DateTime?
+  status         String    @default("RECEIVED") // RECEIVED|PROCESSED|SKIPPED|FAILED
+  createdAt      DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([eventType])
+}
+
+model Invoice {
+  id                String    @id @default(uuid())
+  tenantId          String
+  razorpayInvoiceId String?   @unique
+  razorpayPaymentId String?
+  amount            Decimal?
+  currency          String    @default("INR")
+  status            String    @default("PAID")
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  paidAt            DateTime?
+  hostedUrl         String?
+  createdAt         DateTime  @default(now())
+  tenant            Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}
+
+// A tenant-initiated, one-time purchase of add-on capacity (see
+// Tenant.extraX / billingService.purchaseAddonCapacity) — distinct from
+// Invoice, which mirrors only what Razorpay has actually collected for a
+// subscription renewal. This is NOT yet wired into a real Razorpay charge
+// (same fast-follow noted on the overage-billing feature); it's an internal
+// record of a capacity increase and its price, shown on the Billing page.
+model TenantAddonPurchase {
+  id        String   @id @default(uuid())
+  tenantId  String
+  metric    String // ORGANIZATIONS | WORKSPACES | USERS | CANDIDATES
+  quantity  Int
+  unitPrice Decimal
+  amount    Decimal
+  currency  String   @default("INR")
+  createdAt DateTime @default(now())
+  // Immediate prorated charge for a mid-cycle increase — only issued when the
+  // tenant has auto-pay enabled (see billingService.issueProratedInvoice).
+  // Null on every field below means no proration was issued for this
+  // purchase (no auto-pay, or the increase landed with ~0 cycle time left);
+  // the increase still applies immediately either way, billed in full at the
+  // next renewal via the existing recurring add-on charge.
+  prorationAmount       Decimal?
+  razorpayPaymentLinkId String?
+  paymentLinkShortUrl   String?
+  paymentLinkStatus     String? // PENDING | PAID | EXPIRED | CANCELLED
+  tenant                Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([razorpayPaymentLinkId])
+}
+
+model TenantInvite {
+  id        String   @id @default(uuid())
+  tenantId  String
+  email     String
+  roleId    String
+  token     String   @unique
+  status    String   @default("PENDING") // PENDING|ACCEPTED|EXPIRED|REVOKED
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([email])
+}
+
+// ─── AI OPERATING SYSTEM OBSERVABILITY ───────────────────────────────────────
+
+model AiPromptTemplate {
+  id          String   @id @default(uuid())
+  key         String   @unique // e.g. "copilot_system_prompt"
+  description String?
+  content     String   @db.Text
+  version     Int      @default(1)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// AiToolUsage/AiTokenLog (dead schema — never written to anywhere in
+// server/src) were dropped and replaced by AiUsageLog in migration
+// 20260814_communication_module, alongside this module's own tables.
+model AiUsageLog {
+  id               String   @id @default(uuid())
+  tenantId         String?
+  userId           String?
+  sessionId        String?
+  feature          String
+  agentName        String?
+  toolName         String?
+  provider         String
+  model            String
+  promptTokens     Int
+  completionTokens Int
+  totalTokens      Int
+  costUsd          Decimal?
+  billable         Boolean  @default(false)
+  success          Boolean  @default(true)
+  errorMsg         String?
+  durationMs       Int?
+  createdAt        DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([feature, createdAt])
+  @@index([sessionId])
+}
+
+model AiChatHistory {
+  id        String    @id @default(uuid())
+  title     String
+  messages  Json
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  tenantId String?
+  userId   String?
+  // Best-effort only (G3) — see Notification's doc comment above.
+  organizationId String?
+  workspaceId    String?
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model AdminNotificationState {
+  id             String       @id @default(uuid())
+  adminId        String
+  notificationId String
+  isRead         Boolean      @default(false)
+  isCleared      Boolean      @default(false)
+  tenantId       String?
+  // Best-effort only (G3) — see Notification's doc comment above.
+  organizationId String?
+  workspaceId    String?
+  admin          User         @relation("AdminNotificationStates", fields: [adminId], references: [id], onDelete: Cascade)
+  notification   Notification @relation("NotificationAdminStates", fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([adminId, notificationId])
+  @@index([adminId])
+  @@index([notificationId])
+  @@index([tenantId])
+}
+
+// ─── TEAM COMMUNICATION / CALLING / AI-SUMMARIZATION MODULE (STANDALONE) ─────
+//
+// Entirely new, tenantId-scoped module — one "hub" per tenant (formerly
+// modeled in the source repo as `CommunicationWorkspace`, renamed here to
+// `CommunicationHub` / `commHubId` to avoid colliding in meaning with the
+// Organization/Workspace hierarchy above; this module does NOT interact with
+// Organization/Workspace at all). See migration
+// 20260814000000_communication_module for the recreate-from-scratch history
+// this end state replicates (the source repo's prototype → drop → rebuild).
+
+enum CommunicationChannelType {
+  GENERAL
+  ANNOUNCEMENT
+  DEPARTMENT
+  TEAM
+  PROJECT
+  DIRECT
+  JOB_DISCUSSION
+  INTERVIEW_ROOM
+  CANDIDATE_PORTAL
+}
+
+enum CommunicationChannelRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum CommunicationMessageType {
+  TEXT
+  EMOJI
+  GIF
+  IMAGE
+  VIDEO
+  FILE
+  AUDIO
+  VOICE_NOTE
+}
+
+enum CommunicationCallType {
+  AUDIO
+  VIDEO
+  SCREEN
+}
+
+enum CommunicationCallStatus {
+  INITIATED
+  ONGOING
+  ENDED
+  MISSED
+  REJECTED
+}
+
+enum CommunicationPresenceStatus {
+  ONLINE
+  AWAY
+  BUSY
+  INVISIBLE
+  OFFLINE
+}
+
+model CommunicationHub {
+  id          String   @id @default(uuid())
+  tenantId    String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  channels  CommunicationChannel[]
+  meetings  CommunicationMeeting[]
+
+  @@index([tenantId])
+}
+
+model CommunicationChannel {
+  id          String                   @id @default(uuid())
+  tenantId    String
+  commHubId   String
+  name        String
+  type        CommunicationChannelType @default(GENERAL)
+  isPrivate   Boolean                  @default(false)
+  isArchived  Boolean                  @default(false)
+  description String?
+  entityType  String?
+  entityId    String?
+  createdById String
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  deletedAt   DateTime?
+
+  commHub     CommunicationHub             @relation(fields: [commHubId], references: [id], onDelete: Cascade)
+  members     CommunicationChannelMember[]
+  messages    CommunicationMessage[]
+  calls       CommunicationCall[]
+  aiSummaries CommunicationAiSummary[]
+  notes       CommunicationNote[]
+
+  @@index([tenantId])
+  @@index([commHubId])
+  @@index([createdById])
+}
+
+model CommunicationChannelMember {
+  id         String                   @id @default(uuid())
+  tenantId   String
+  channelId  String
+  userId     String
+  role       CommunicationChannelRole @default(MEMBER)
+  isFavorite Boolean                  @default(false)
+  isArchived Boolean                  @default(false)
+  joinedAt   DateTime                 @default(now())
+  lastReadAt DateTime                 @default(now())
+
+  channel CommunicationChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([tenantId])
+  @@index([channelId])
+  @@index([userId])
+}
+
+model CommunicationMessage {
+  id        String                   @id @default(uuid())
+  tenantId  String
+  channelId String?
+  dmPairId  String?
+  senderId  String
+  sender    User                     @relation(fields: [senderId], references: [id])
+  content   String?
+  type      CommunicationMessageType @default(TEXT)
+  mediaUrl  String?
+  fileName  String?
+  fileSize  Int?
+  replyToId String?
+  isPinned  Boolean                  @default(false)
+  isStarred Boolean                  @default(false)
+  editedAt  DateTime?
+  deletedAt DateTime?
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
+
+  channel  CommunicationChannel?        @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  replyTo  CommunicationMessage?        @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies  CommunicationMessage[]       @relation("MessageReplies")
+  reactions CommunicationReaction[]
+  threads  CommunicationThread[]
+  statuses CommunicationMessageStatus[]
+  tasks    CommunicationTask[]
+
+  @@index([tenantId])
+  @@index([channelId])
+  @@index([dmPairId])
+  @@index([senderId])
+  @@index([replyToId])
+}
+
+model CommunicationReaction {
+  id        String   @id @default(uuid())
+  tenantId  String
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message CommunicationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([tenantId])
+  @@index([messageId])
+  @@index([userId])
+}
+
+model CommunicationThread {
+  id              String   @id @default(uuid())
+  tenantId        String
+  parentMessageId String
+  messageId       String
+  createdAt       DateTime @default(now())
+
+  parentMessage CommunicationMessage @relation(fields: [parentMessageId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([parentMessageId])
+  @@index([messageId])
+}
+
+model CommunicationCall {
+  id        String                  @id @default(uuid())
+  tenantId  String
+  commHubId String
+  channelId String?
+  callerId  String
+  type      CommunicationCallType   @default(AUDIO)
+  status    CommunicationCallStatus @default(INITIATED)
+  startedAt DateTime                @default(now())
+  endedAt   DateTime?
+  createdAt DateTime                @default(now())
+
+  channel      CommunicationChannel?          @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  participants CommunicationCallParticipant[]
+  aiSummaries  CommunicationAiSummary[]
+
+  @@index([tenantId])
+  @@index([commHubId])
+  @@index([channelId])
+  @@index([callerId])
+}
+
+model CommunicationCallParticipant {
+  id       String    @id @default(uuid())
+  tenantId String
+  callId   String
+  userId   String
+  status   String    @default("JOINED")
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  call CommunicationCall @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@unique([callId, userId])
+  @@index([tenantId])
+  @@index([callId])
+  @@index([userId])
+}
+
+model CommunicationPresence {
+  id           String                      @id @default(uuid())
+  tenantId     String
+  userId       String                      @unique
+  status       CommunicationPresenceStatus @default(ONLINE)
+  customStatus String?
+  lastSeenAt   DateTime                    @default(now())
+  updatedAt    DateTime                    @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model CommunicationDevice {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String
+  pushToken String
+  platform  String   @default("WEB")
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model CommunicationMessageStatus {
+  id        String    @id @default(uuid())
+  tenantId  String
+  messageId String
+  userId    String
+  status    String    @default("DELIVERED") // SENT | DELIVERED | READ
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  message CommunicationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([tenantId])
+  @@index([messageId])
+  @@index([userId])
+}
+
+model CommunicationAiSummary {
+  id          String   @id @default(uuid())
+  tenantId    String
+  channelId   String?
+  callId      String?
+  summary     String   @db.Text
+  actionItems String?  @db.Text
+  highlights  String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  channel CommunicationChannel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  call    CommunicationCall?    @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+}
+
+model CommunicationMeeting {
+  id          String    @id @default(uuid())
+  tenantId    String
+  commHubId   String
+  title       String
+  description String?
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  endedAt     DateTime?
+  status      String    @default("SCHEDULED") // SCHEDULED | ONGOING | COMPLETED | CANCELLED
+  meetingLink String?
+  interviewId String?   @unique
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  notes     CommunicationNote[]
+  commHub   CommunicationHub @relation(fields: [commHubId], references: [id], onDelete: Cascade)
+  interview Interview?       @relation(fields: [interviewId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([commHubId])
+}
+
+model CommunicationNote {
+  id             String   @id @default(uuid())
+  tenantId       String
+  meetingId      String?
+  channelId      String?
+  content        String   @db.Text
+  version        Int      @default(1)
+  lastEditedById String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  meeting CommunicationMeeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  channel CommunicationChannel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([meetingId])
+  @@index([channelId])
+}
+
+model CommunicationTask {
+  id          String    @id @default(uuid())
+  tenantId    String
+  messageId   String?
+  title       String
+  description String?
+  status      String    @default("TODO") // TODO | IN_PROGRESS | DONE
+  priority    String    @default("MEDIUM") // LOW | MEDIUM | HIGH
+  dueDate     DateTime?
+  assigneeId  String?
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  message CommunicationMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([messageId])
+  @@index([assigneeId])
+}
+
+model CommunicationSettings {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  userId               String   @unique
+  notificationSound    Boolean  @default(true)
+  desktopNotifications Boolean  @default(true)
+  defaultStatus        String   @default("ONLINE")
+  theme                String   @default("LIGHT")
+  autoJoinMeetings     Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model CandidateTimelineEvent {
+  id          String   @id @default(uuid())
+  tenantId    String
+  candidateId String
+  title       String
+  description String?
+  eventType   String   @default("SYSTEM") // SYSTEM | COMMUNICATION | INTERVIEW | STAGE_CHANGE
+  metadata    Json?
+  actorId     String?
+  createdAt   DateTime @default(now())
+
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  actor     User?     @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([candidateId])
+}
+
+model AutomationWorkflow {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  trigger     String // e.g., "CANDIDATE_APPLIED", "INTERVIEW_ENDED"
+  isActive    Boolean  @default(true)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rules   AutomationRule[]
+  actions AutomationAction[]
+  logs    AutomationLog[]
+
+  @@index([tenantId, trigger, isActive])
+}
+
+model AutomationRule {
+  id         String @id @default(uuid())
+  workflowId String
+  field      String // e.g., "candidate.experienceYears"
+  operator   String // e.g., "GREATER_THAN"
+  value      String // e.g., "5"
+
+  workflow AutomationWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+}
+
+model AutomationAction {
+  id         String @id @default(uuid())
+  workflowId String
+  type       String // e.g., "SEND_EMAIL", "CREATE_MEETING", "ASSIGN_RECRUITER"
+  payload    Json? // Specific configuration for the action
+  orderIndex Int    @default(0)
+
+  workflow AutomationWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+}
+
+model AutomationLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  workflowId String
+  entityId   String // The ID of the Candidate or Interview being processed
+  status     String // "SUCCESS", "FAILED", "PENDING"
+  error      String?
+  executedAt DateTime @default(now())
+
+  workflow AutomationWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+

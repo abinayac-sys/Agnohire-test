@@ -1,0 +1,162 @@
+# ─── AgnoHire — full stack production compose ────────────────────────────────
+# Builds and runs the whole app in containers: postgres, redis, a one-shot
+# "migrate" job, the API ("server"), and the web edge ("web" — nginx + the
+# built SPA, proxying /api and /socket.io to "server").
+#
+# This container stack speaks plain HTTP on ${WEB_PORT} (host side). TLS is
+# terminated OUTSIDE this stack, by the host's own nginx/Caddy reverse-proxying
+# to 127.0.0.1:${WEB_PORT}. See deploy/nginx.docker-host.conf.
+#
+# Requires Docker Compose v2.20+ (uses `condition: service_completed_successfully`).
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# One-time (or repeatable, idempotent) seed of roles/permissions/plans/etc:
+#   docker compose -f docker-compose.prod.yml run --rm seed
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: agnohire-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agnohire}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agnohire}
+      POSTGRES_DB: ${POSTGRES_DB:-agnohire}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agnohire}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: agnohire-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # One-shot: runs pending Prisma migrations as the DB owner, then exits.
+  # "server" waits for this to finish successfully before it starts.
+  migrate:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      NODE_ENV: production
+      # Owner connection — migrations run DDL (and CREATE ROLE for agnohire_app).
+      DIRECT_URL: postgresql://${POSTGRES_USER:-agnohire}:${POSTGRES_PASSWORD:-agnohire}@postgres:5432/${POSTGRES_DB:-agnohire}?schema=public
+      # Only needs to be a well-formed value here — Prisma's schema validation
+      # requires it to be SET, but "migrate deploy" itself uses DIRECT_URL.
+      DATABASE_URL: postgresql://agnohire_app:${AGNOHIRE_APP_PASSWORD:-agnohire_app}@postgres:5432/${POSTGRES_DB:-agnohire}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-shot: seeds roles/permissions/plans/default admin. Idempotent (safe to
+  # re-run). prisma/seed.ts opens its own plain PrismaClient (not the app's
+  # RLS-aware wrapped client in src/config/database.ts), so it never sets the
+  # app.bypass GUC the RLS policies require — it must run as the DB OWNER
+  # (like "migrate" above), not the restricted agnohire_app role "server" uses,
+  # or every tenant-scoped insert (Sector, Domain, ...) is rejected by RLS.
+  seed:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["npx", "tsx", "prisma/seed.ts"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agnohire}:${POSTGRES_PASSWORD:-agnohire}@postgres:5432/${POSTGRES_DB:-agnohire}?schema=public
+      DIRECT_URL: postgresql://${POSTGRES_USER:-agnohire}:${POSTGRES_PASSWORD:-agnohire}@postgres:5432/${POSTGRES_DB:-agnohire}?schema=public
+      # env.ts validates these at import time (via encryption.ts) even though
+      # seeding itself never uses JWT_SECRET — it must still be set or the
+      # process throws before doing anything.
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET}
+      GOOGLE_CALENDAR_REFRESH_TOKEN: ${GOOGLE_CALENDAR_REFRESH_TOKEN}
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: agnohire-server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      # Two reverse-proxy hops sit in front of this container: the host's
+      # nginx (TLS termination) and the "web" container's nginx (proxies
+      # /api here). Get this wrong and req.ip resolves to a proxy's own
+      # address for EVERY request, collapsing all callers into one shared
+      # rate-limit bucket — see server/src/middlewares/rateLimiter.middleware.ts.
+      TRUST_PROXY_HOPS: "2"
+      # Restricted, non-superuser, NOBYPASSRLS role — see
+      # server/prisma/migrations/20260708130000_rls_phase1_restricted_role.
+      DATABASE_URL: postgresql://agnohire_app:${AGNOHIRE_APP_PASSWORD:-agnohire_app}@postgres:5432/${POSTGRES_DB:-agnohire}?schema=public&connection_limit=20&pool_timeout=10
+      DIRECT_URL: postgresql://${POSTGRES_USER:-agnohire}:${POSTGRES_PASSWORD:-agnohire}@postgres:5432/${POSTGRES_DB:-agnohire}?schema=public
+      REDIS_URL: redis://redis:6379
+      # Public HTTPS origin — must match what candidates/recruiters type in the
+      # browser (the host nginx's server_name), or CORS/cookies break.
+      CLIENT_URL: https://${DOMAIN}
+      JWT_SECRET: ${JWT_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ALLOW_PASSWORD_LOGIN: ${ALLOW_PASSWORD_LOGIN:-true}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET}
+      GOOGLE_CALENDAR_REFRESH_TOKEN: ${GOOGLE_CALENDAR_REFRESH_TOKEN}
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+      # Platform-level SaaS billing operator secrets (one Razorpay account for
+      # the whole platform, never per-tenant) — read directly from process.env
+      # by server/src/config/env.ts, not from System Configuration. Compose's
+      # root .env only interpolates ${...} into this file; it does NOT auto-
+      # forward variables into the container, so these must be listed here
+      # explicitly or env.razorpay.enabled stays false regardless of .env.
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    expose:
+      - "4000"
+
+  web:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    container_name: agnohire-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3002}:80"
+    depends_on:
+      - server
+
+volumes:
+  postgres_data:
+  redis_data:

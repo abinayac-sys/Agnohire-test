@@ -1,0 +1,58 @@
+[
+  {
+    "module": "Dashboard",
+    "purpose": "Overview of recruitment metrics and key actions.",
+    "features": ["Metrics widgets", "Quick actions", "Recent activities"],
+    "workflow": "Navigate to Dashboard to view your overall pipeline health and click Quick Actions to jump directly to common tasks.",
+    "commonActions": ["View metrics", "Navigate to pending tasks"]
+  },
+  {
+    "module": "Jobs",
+    "purpose": "Create and manage job requisitions.",
+    "features": ["Job details configuration", "Workflow round setup", "Candidate assignment"],
+    "workflow": "Go to Jobs → Click Create Job → Fill Job Details → Configure Interview Rounds → Submit for approval.",
+    "commonActions": ["Create Job", "Edit Job", "Close Job"]
+  },
+  {
+    "module": "Candidates",
+    "purpose": "Manage candidate profiles and their applications.",
+    "features": ["Candidate directory", "Application status tracking", "Resume parsing"],
+    "workflow": "Go to Candidates to view all applicants. Click a candidate to view their profile, assigned jobs, and progress.",
+    "commonActions": ["Add Candidate", "View Profile", "Update Status"]
+  },
+  {
+    "module": "Schedule",
+    "purpose": "Book live and panel interviews.",
+    "features": ["Calendar integration", "Availability matching", "Meeting link generation"],
+    "workflow": "Navigate to Schedule → Click Schedule Interview → Select Candidate → Select Interviewers → Choose Date & Time → Generate Meeting Link → Save.",
+    "commonActions": ["Schedule Interview", "Sync Calendar", "Send Invite"]
+  },
+  {
+    "module": "Interviews",
+    "purpose": "Launch and manage automated assessments and interviews.",
+    "features": ["Question bank integration", "Automated proctoring", "AI grading"],
+    "workflow": "Navigate to Interviews → Launch Interview → Select Job Requisition → Select Workflow Round → Select Candidates → Choose Question Bank → Generate Interview Link.",
+    "commonActions": ["Launch Interview", "Review AI Scores", "View Transcripts"]
+  },
+  {
+    "module": "Panel Reviews",
+    "purpose": "Aggregate interviewer feedback and finalize hiring decisions.",
+    "features": ["Feedback collection", "Consensus aggregation", "Final decision recording"],
+    "workflow": "Navigate to Reviews -> View panel feedback -> Discuss consensus -> Record final decision (Pass, Hold, or Fail).",
+    "commonActions": ["Submit Feedback", "View Consensus", "Record Decision"]
+  },
+  {
+    "module": "HR Approval",
+    "purpose": "Final administrative review before extending an offer.",
+    "features": ["Approval queue", "Offer trigger", "Salary recommendation review"],
+    "workflow": "Navigate to HR Approval -> Select Candidate -> Review Interviewer Recommendations -> Click Approve to automatically generate offer letter.",
+    "commonActions": ["Approve Candidate", "Reject Candidate", "Hold Candidate"]
+  },
+  {
+    "module": "Offers",
+    "purpose": "Manage and send offer letters.",
+    "features": ["PDF Generation", "Email dispatch", "Offer tracking"],
+    "workflow": "Navigate to Offers -> Review Generated Offer -> Confirm Details -> Send Email.",
+    "commonActions": ["Generate Offer", "Send Email"]
+  }
+]

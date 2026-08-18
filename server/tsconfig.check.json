@@ -1,0 +1,26 @@
+// Type-checks the trees that tsconfig.json (the BUILD config, rootDir=src)
+// structurally cannot include: tests/, the Prisma seed, and the one-off scripts.
+// Nothing here is emitted, so no rootDir/outDir constraint applies.
+//
+// Why this file exists: `prisma/seed.ts` and `server/tests/` were checked by
+// nothing at all. That is how a `prisma.user.findUnique({ where: { email } })`
+// against a non-unique column shipped — it is a compile error that nobody ever
+// compiled, and it surfaced instead as a db:seed crash. The seed and the tests
+// are production code; typecheck them.
+//
+// All of tsconfig.base's strictness (including noUnusedLocals/noUnusedParameters)
+// is kept: turning it on over tests/ + scripts/ cost only 10 errors in practice,
+// so there was no reason to weaken it.
+//
+// Note the `exclude` override below is load-bearing: tsconfig.json excludes
+// prisma/seed.ts, and without re-declaring exclude here that would be inherited
+// and the seed would go on being unchecked.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "prisma/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

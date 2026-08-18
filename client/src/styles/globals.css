@@ -1,0 +1,164 @@
+@import '@fontsource/syne/600.css';
+@import '@fontsource/syne/700.css';
+@import '@fontsource/plus-jakarta-sans/400.css';
+@import '@fontsource/plus-jakarta-sans/500.css';
+@import '@fontsource/plus-jakarta-sans/600.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Token fallbacks (Arctic preset — the default theme, see THEME_PRESETS). These
+ * must match DEFAULT_THEME so a fresh load paints the real default and never
+ * flashes a different palette before ThemeProvider hydrates. The live values are
+ * injected at runtime by the pre-paint theme boot + ThemeProvider (DB theme,
+ * updated via Socket.IO).
+ */
+:root {
+  --color-bg: #f7f9fc;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-surface-overlay: #ffffff;
+  --color-border: #e2e8f0;
+  --color-border-subtle: #eef2f7;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94a3b8;
+  --color-text-disabled: #cbd5e1;
+  --color-accent: #3b6cf6;
+  --color-accent-hover: #2c5af0;
+  --color-accent-muted: #e4ecff;
+  --color-accent-fg: #ffffff;
+  --color-success: #16a34a;
+  --color-success-muted: #dcfce7;
+  --color-warning: #d97706;
+  --color-warning-muted: #fef3c7;
+  --color-danger: #dc2626;
+  --color-danger-muted: #fee2e2;
+  --color-info: #2563eb;
+  --color-info-muted: #dbeafe;
+  --app-font-family: 'Poppins', sans-serif;
+  --app-font-size: 15px;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, p, span, a, label, li, td, th {
+    font-family: var(--app-font-family) !important;
+  }
+  .font-mono, code, pre {
+    font-family: "JetBrains Mono", monospace !important;
+  }
+  html, body {
+    font-size: var(--app-font-size) !important;
+  }
+  body {
+    @apply bg-bg text-text-primary font-sans antialiased;
+    /* Soft atmospheric wash so surfaces float rather than sit on a flat slab. */
+    background-image:
+      radial-gradient(
+        48rem 48rem at 100% -10%,
+        color-mix(in srgb, var(--color-accent) 14%, transparent),
+        transparent 58%
+      ),
+      radial-gradient(
+        42rem 42rem at -12% 112%,
+        color-mix(in srgb, var(--color-info) 13%, transparent),
+        transparent 56%
+      ),
+      radial-gradient(
+        34rem 34rem at 52% 6%,
+        color-mix(in srgb, var(--color-accent) 6%, transparent),
+        transparent 60%
+      );
+    background-attachment: fixed;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-heading;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-text-disabled);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-text-muted);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-border bg-surface shadow-elev-1;
+  }
+  /* Cards that respond to hover — lift + indigo-tinted border + shadow. */
+  .card-interactive {
+    @apply rounded-xl border border-border bg-surface shadow-elev-1 transition-all duration-200;
+  }
+  .card-interactive:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+    box-shadow:
+      0 6px 20px -6px color-mix(in srgb, var(--color-accent) 22%, transparent),
+      0 2px 6px -2px rgb(17 23 38 / 0.08);
+  }
+  /* Frosted panel for elevated surfaces (drawers, popovers, headers). */
+  .panel-glass {
+    background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+    @apply border border-border backdrop-blur-xl;
+  }
+  /* Soft tinted chip behind icons — brighter than a saturated fill. */
+  .icon-chip {
+    @apply flex items-center justify-center rounded-xl bg-accent-muted text-accent;
+  }
+  .skeleton {
+    @apply animate-pulse rounded-md bg-surface-overlay;
+  }
+  .animate-scale-in {
+    animation: scaleIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  .animate-scale-in-up {
+    animation: scaleInUp 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes scaleInUp {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}

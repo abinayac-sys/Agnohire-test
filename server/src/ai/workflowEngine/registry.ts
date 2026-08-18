@@ -1,0 +1,183 @@
+import { WorkflowStep } from './types.js';
+
+export const WORKFLOW_STEPS: WorkflowStep[] = [
+  {
+    id: 'create-sector',
+    name: 'Create Sector',
+    module: 'admin',
+    description: 'Create an industry sector for organizing roles.',
+    prerequisites: [],
+    nextStepId: 'create-domain',
+    automationTool: 'createSector',
+    manualFallbackGuide: 'Go to Administration → Sectors → Click "Add Sector" → Enter Name → Click "Save".',
+    successCondition: 'Sector is created and registered in the database.',
+  },
+  {
+    id: 'create-domain',
+    name: 'Create Domain',
+    module: 'admin',
+    description: 'Create a specific domain/department under a sector.',
+    prerequisites: ['sectorId'],
+    nextStepId: 'create-job',
+    automationTool: 'createDomain',
+    manualFallbackGuide: 'Go to Administration → Domains → Click "Add Domain" → Select Sector → Enter Name → Click "Save".',
+    successCondition: 'Domain is created and linked to the selected Sector.',
+  },
+  {
+    id: 'create-job',
+    name: 'Create Job Requisition',
+    module: 'requisition',
+    description: 'Create a new job requisition with job description and workflow stages.',
+    prerequisites: ['sectorId', 'domainId'],
+    nextStepId: 'approve-job',
+    automationTool: 'createJob',
+    manualFallbackGuide: 'Go to Hiring → Jobs → Click "Create Job" → Fill details (title, sector, domain, stages) → Click "Save".',
+    successCondition: 'Job Requisition is created as a Draft in the database.',
+  },
+  {
+    id: 'approve-job',
+    name: 'Job Requisition Approval',
+    module: 'requisition',
+    description: 'Approve the job requisition to publish it for hiring.',
+    prerequisites: ['jobId'],
+    nextStepId: 'import-candidates',
+    automationTool: 'approveJob',
+    manualFallbackGuide: 'Go to Hiring → HR Approval → Locate the pending Job → Select and Review → Click "Approve". Once done, return here and type "Approved".',
+    successCondition: 'Job status is updated to OPEN or APPROVED.',
+  },
+  {
+    id: 'import-candidates',
+    name: 'Import Candidates',
+    module: 'requisition',
+    description: 'Import candidate profiles from resume, Excel, or manually.',
+    prerequisites: ['jobId'],
+    nextStepId: 'assign-candidates',
+    automationTool: 'uploadCandidate',
+    manualFallbackGuide: 'Go to Sourcing → Candidate Pool → Click "Import Candidates" → Upload CSV/Excel or Resumes → Click "Import".',
+    successCondition: 'Candidates are successfully registered in the pool.',
+  },
+  {
+    id: 'assign-candidates',
+    name: 'Assign Candidates to Job',
+    module: 'requisition',
+    description: 'Assign imported candidates to the open job requisition.',
+    prerequisites: ['jobId', 'candidateListId'],
+    nextStepId: 'assign-recruiter',
+    automationTool: 'assignJobToList',
+    manualFallbackGuide: 'Go to Sourcing → Select Candidates/List → Click "Assign to Job" → Choose Job Requisition → Confirm.',
+    successCondition: 'Candidates are successfully linked to the Job Application pipeline.',
+  },
+  {
+    id: 'assign-recruiter',
+    name: 'Assign Recruiter or Hiring Manager',
+    module: 'requisition',
+    description: 'Assign a recruiter or hiring manager to oversee the candidate application.',
+    prerequisites: ['jobId'],
+    nextStepId: 'create-question-bank',
+    automationTool: 'assignRecruiter',
+    manualFallbackGuide: 'Go to Hiring → Job Requisition Detail → Members Tab → Click "Assign Recruiter" → Select staff → Save.',
+    successCondition: 'Recruiter or Hiring Manager is linked to the Job pipeline.',
+  },
+  {
+    id: 'create-question-bank',
+    name: 'Create Question Bank',
+    module: 'interview',
+    description: 'Create a question bank for candidate assessment and interview.',
+    prerequisites: ['domainId'],
+    nextStepId: 'schedule-interview',
+    automationTool: 'createQuestionBank',
+    manualFallbackGuide: 'Go to Question Bank → Click "Create Bank" → Select Domain → Add MCQs or Coding questions → Save.',
+    successCondition: 'Question Bank is created and ready for assignment.',
+  },
+  {
+    id: 'schedule-interview',
+    name: 'Schedule Interview',
+    module: 'interview',
+    description: 'Schedule a candidate interview round.',
+    prerequisites: ['jobId', 'candidateId'],
+    nextStepId: 'conduct-interview',
+    automationTool: 'scheduleInterview',
+    manualFallbackGuide: 'Go to Interviews → Click "Schedule Interview" → Select Candidate and Interviewer → Choose Date/Time → Save.',
+    successCondition: 'Interview is scheduled and invitations sent.',
+  },
+  {
+    id: 'conduct-interview',
+    name: 'Conduct AI / Live Interview',
+    module: 'interview',
+    description: 'Candidate completes the scheduled AI or Live interview.',
+    prerequisites: ['interviewId'],
+    nextStepId: 'review-interview',
+    automationTool: 'startAIInterview',
+    manualFallbackGuide: 'Share the secure interview link with the candidate. Wait for the candidate to complete the session.',
+    successCondition: 'Candidate submits interview answers and status becomes COMPLETED.',
+  },
+  {
+    id: 'review-interview',
+    name: 'Review Evaluation',
+    module: 'interview',
+    description: 'Review the AI evaluation, proctoring report, and score.',
+    prerequisites: ['interviewId'],
+    nextStepId: 'hr-approval',
+    automationTool: 'submitFeedback',
+    manualFallbackGuide: 'Go to Interviews → Select Completed Interview → Review AI Evaluation / Proctoring → Submit decision.',
+    successCondition: 'Interview review decision is submitted.',
+  },
+  {
+    id: 'hr-approval',
+    name: 'HR Final Approval',
+    module: 'hiring',
+    description: 'Get final HR approval for the candidate to release the job offer.',
+    prerequisites: ['interviewId'],
+    nextStepId: 'create-offer',
+    automationTool: 'hrApprove',
+    manualFallbackGuide: 'Go to Hiring → Final HR Approval → Select candidate profile → Click "Approve". Once done, type "Approved" here.',
+    successCondition: 'Hiring HR status is approved.',
+  },
+  {
+    id: 'create-offer',
+    name: 'Release Offer Letter',
+    module: 'hiring',
+    description: 'Generate and send the tentative offer letter to the candidate.',
+    prerequisites: ['jobId', 'candidateId'],
+    nextStepId: 'onboarding',
+    automationTool: 'generateAndSendTentativeOffer',
+    manualFallbackGuide: 'Go to Candidates → Select Candidate → Click "Offer Details" → Click "Generate Offer Letter" → Send to Candidate.',
+    successCondition: 'Offer Letter PDF is generated and emailed to the candidate.',
+  },
+  {
+    id: 'onboarding',
+    name: 'Candidate Onboarding',
+    module: 'hiring',
+    description: 'Kickstart candidate onboarding and assign Day-1 checklists.',
+    prerequisites: ['candidateId'],
+    nextStepId: 'analytics',
+    automationTool: 'createOnboarding',
+    manualFallbackGuide: 'Go to Onboarding → Locate Candidate → Click "Initialize Onboarding" → Complete Day-1 checklist.',
+    successCondition: 'Onboarding record is initialized.',
+  },
+  {
+    id: 'analytics',
+    name: 'Analytics and Insights',
+    module: 'analytics',
+    description: 'View hiring insights and recruitment dashboard metrics.',
+    prerequisites: [],
+    automationTool: 'getAnalytics',
+    manualFallbackGuide: 'Go to Dashboard → Analytics → Review candidate statistics and recruitment efficiency.',
+    successCondition: 'Recruitment statistics and reports are loaded.',
+  }
+];
+
+export class WorkflowRegistry {
+  static getStep(id: string): WorkflowStep | undefined {
+    return WORKFLOW_STEPS.find(s => s.id === id);
+  }
+
+  static getSteps(): WorkflowStep[] {
+    return WORKFLOW_STEPS;
+  }
+
+  static getNextStep(id: string): WorkflowStep | undefined {
+    const step = this.getStep(id);
+    return step && step.nextStepId ? this.getStep(step.nextStepId) : undefined;
+  }
+}

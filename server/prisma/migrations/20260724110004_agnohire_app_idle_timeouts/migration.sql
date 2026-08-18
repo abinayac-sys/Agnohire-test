@@ -1,0 +1,29 @@
+-- Close connections the app opens but never gives back.
+--
+-- Prisma's own client-side pool (connection_limit on DATABASE_URL) grows
+-- lazily under load but never shrinks — there is no idle-timeout on the
+-- Prisma side, only $disconnect() on process shutdown. A traffic spike can
+-- ratchet the pool up toward connection_limit and it then sits there
+-- indefinitely, holding real Postgres connections idle even at rest.
+--
+-- These are role-level settings, enforced by Postgres itself, so they work
+-- regardless of whether the app is currently connecting directly or through
+-- PgBouncer (see docker-compose.yml SERVER_IDLE_TIMEOUT/SERVER_LIFETIME,
+-- which only govern PgBouncer's own backend leg and can't reach connections
+-- Prisma opens directly). Postgres closing an idle connection is invisible
+-- to the app — Prisma reconnects lazily and cheaply the next time it needs
+-- one, so this cannot surface as a request-level error the way exhausting
+-- connection_limit or PgBouncer's QUERY_WAIT_TIMEOUT would.
+--
+-- idle_session_timeout: a connection with no transaction and nothing running
+-- for this long is dropped. 5 minutes is well above any real request gap
+-- under normal traffic, so live connections are never touched — only ones
+-- Prisma is hoarding unused after a spike has passed.
+--
+-- idle_in_transaction_session_timeout: a connection left inside an open
+-- transaction (e.g. an interactive $transaction whose continuation hung or
+-- errored oddly) holds row/table locks the whole time it's idle. 30s is
+-- generous for this app's transactions, which wrap either a single RLS GUC
+-- + query pair or a short multi-statement operation.
+ALTER ROLE agnohire_app SET idle_session_timeout = '5min';
+ALTER ROLE agnohire_app SET idle_in_transaction_session_timeout = '30s';

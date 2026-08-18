@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Prisma
+server/prisma/migrations/dev.db*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Uploads / generated artifacts
+server/uploads/
+server/generated/
+server/storage/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Vite
+client/.vite/
+
+# Local UI test screenshots
+test-screenshots/
+.shots/
+
+# Local project copies / archives
+AH/
+AH.zip
+*.zip
+
+# Tesseract OCR language data (downloaded at runtime, ~5MB+ each)
+*.traineddata
+
+# Local TLS certs for HTTPS dev server (never commit private keys)
+client/certs/
+*.pem
+
+# Local E2E debugging artifacts
+e2e-screenshots/
+e2e-test.mjs
+
+# Scratch & Temporary Folders
+scratch/
+shared_with_teammate/

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon.png" id="app-favicon" />
+    <link rel="apple-touch-icon" href="/favicon.png" id="app-apple-icon" />
+    <title>AgnoHire</title>
+    <meta name="description" content="Enterprise AI Recruitment Management Platform" />
+
+    <!-- Preconnect to Google Fonts for faster font load -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <!-- Always preload Poppins (default font) immediately -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
+    />
+
+    <!--
+      Synchronously apply the saved app icon (favicon) & font BEFORE React mounts
+      so there is zero flash of wrong favicon/font on refresh.
+    -->
+    <script>
+      (function () {
+        try {
+          var savedIcon = localStorage.getItem('agnohire.appIcon');
+          if (savedIcon) {
+            var iconEl = document.getElementById('app-favicon') || document.querySelector('link[rel="icon"]');
+            var appleEl = document.getElementById('app-apple-icon') || document.querySelector('link[rel="apple-touch-icon"]');
+            if (iconEl) iconEl.href = savedIcon;
+            if (appleEl) appleEl.href = savedIcon;
+          }
+        } catch (e) {}
+
+        var STACKS = {
+          'Arial': 'Arial, sans-serif',
+          'Calibri': 'Calibri, Candara, Segoe, "Segoe UI", Optima, Arial, sans-serif',
+          'Helvetica': '"Helvetica Neue", Helvetica, Arial, sans-serif',
+          'Roboto': "'Roboto', sans-serif",
+          'Open Sans': "'Open Sans', sans-serif",
+          'Lato': "'Lato', sans-serif",
+          'Inter': "'Inter', sans-serif",
+          'Segoe UI': '"Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif',
+          'Poppins': "'Poppins', sans-serif",
+          'Source Sans Pro': "'Source Sans Pro', sans-serif",
+          'Cambria': 'Cambria, Georgia, serif',
+          'Georgia': 'Georgia, serif',
+          'Times New Roman': '"Times New Roman", Times, Georgia, serif',
+          'Garamond': 'Garamond, Baskerville, "Baskerville Old Face", "Hoefler Text", "Times New Roman", serif',
+          'Merriweather': "'Merriweather', Georgia, serif",
+          'Plus Jakarta Sans': '"Plus Jakarta Sans", sans-serif',
+          'Syne': 'Syne, sans-serif',
+          'JetBrains Mono': '"JetBrains Mono", monospace',
+        };
+        var GOOGLE_FONTS = {
+          'Roboto': 'family=Roboto:wght@300;400;500;700',
+          'Open Sans': 'family=Open+Sans:wght@300;400;500;600;700',
+          'Lato': 'family=Lato:wght@300;400;700',
+          'Inter': 'family=Inter:wght@300;400;500;600;700',
+          'Source Sans Pro': 'family=Source+Sans+Pro:wght@300;400;600;700',
+          'Merriweather': 'family=Merriweather:wght@300;400;700',
+          'Plus Jakarta Sans': 'family=Plus+Jakarta+Sans:wght@300;400;500;600;700',
+          'Syne': 'family=Syne:wght@400;600;700',
+        };
+        try {
+          var savedFont = localStorage.getItem('agnohire.themeFont') || 'Poppins';
+          var stack = STACKS[savedFont] || STACKS['Poppins'];
+          document.documentElement.style.setProperty('--app-font-family', stack);
+          // Load via Google Fonts if needed (Poppins already preloaded above)
+          if (savedFont !== 'Poppins' && GOOGLE_FONTS[savedFont]) {
+            var link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = 'https://fonts.googleapis.com/css2?' + GOOGLE_FONTS[savedFont] + '&display=swap';
+            document.head.appendChild(link);
+          }
+          // Apply saved font size
+          var savedSize = localStorage.getItem('agnohire.themeFontSize') || '15px';
+          document.documentElement.style.setProperty('--app-font-size', savedSize);
+        } catch (e) {
+          // localStorage blocked — use defaults
+          document.documentElement.style.setProperty('--app-font-family', "'Poppins', sans-serif");
+          document.documentElement.style.setProperty('--app-font-size', '15px');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

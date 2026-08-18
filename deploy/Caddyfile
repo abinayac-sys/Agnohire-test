@@ -1,0 +1,36 @@
+# ─── AgnoHire — Production single-origin TLS (Caddy) ────────────────────────
+#
+# Why this exists: the proctored interview uses the browser camera + microphone
+# (getUserMedia), which browsers only expose in a SECURE CONTEXT — https:// or
+# localhost. In any real deployment the candidate is on a different machine, so
+# the platform MUST be served over HTTPS or the camera will never initialize.
+#
+# Caddy terminates TLS (obtaining + auto-renewing a real certificate from
+# Let's Encrypt), serves the built SPA, and proxies the API + Socket.IO to the
+# Node server on the SAME ORIGIN. The client already uses relative URLs
+# (`/api`, `io('/')`), so no client changes are needed.
+#
+# Prereqs:
+#   - DNS A/AAAA record for the hostname below → this host
+#   - Build the SPA:  npm run build   (output: client/dist)
+#   - Run the API:    NODE_ENV=production node server/dist/app.js   (PORT=4000)
+#   - Set CLIENT_URL=https://<hostname> in the server .env (CORS origin)
+
+hire.example.com {
+    encode gzip zstd
+
+    # API + realtime traffic → Node API (Express + Socket.IO). Caddy upgrades
+    # WebSocket connections automatically.
+    @backend path /api/* /socket.io/*
+    reverse_proxy @backend 127.0.0.1:4000
+
+    # Everything else → built single-page app, with history-mode fallback.
+    root * /var/www/agnohire/client/dist
+    try_files {path} /index.html
+    file_server
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+    }
+}

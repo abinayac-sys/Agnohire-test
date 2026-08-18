@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      # Builds all three workspaces: shared (tsc) -> server (prisma generate + tsc)
+      # -> client (vite build). Catches type errors and build breaks across the
+      # monorepo. No DB/secrets needed — nothing is executed, only compiled.
+      - run: npm run build
+
+  # NOTE: the server test suite (server/tests) is black-box and runs against a
+  # LIVE server + Postgres + Redis (TEST_BASE_URL). Running it in CI needs the
+  # full stack stood up first; add a separate job with service containers when
+  # you want it gated automatically.
